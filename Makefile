@@ -1,9 +1,11 @@
-.PHONY: run
+.PHONY: all
 
-build:
-	clang -g -Wall -o pth_pool pth_pool.c -lpthread -lrt
+all: build run
+	
+build: producer_consumer.c
+	clang -g -Wall -o producer_consumer.out producer_consumer.c -lpthread -lrt
 
-run: build producer_consumer.out
+run: producer_consumer.out
 	./producer_consumer.out
 
 clean: producer_consumer.out

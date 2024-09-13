@@ -1,13 +1,3 @@
-/* File:  
- *    pth_pool.c
- *
- * Purpose:
- *    Implementação de um pool de threads
- *
- *
- * Compile:  gcc -g -Wall -o pth_pool pth_pool.c -lpthread -lrt
- * Usage:    ./pth_hello
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h> 
@@ -15,105 +5,176 @@
 #include <semaphore.h>
 #include <time.h>
 
-#define THREAD_NUM 4    // Tamanho do pool de threads
+#define THREAD_NUM 3
 #define BUFFER_SIZE 256 // Númermo máximo de tarefas enfileiradas
 
-typedef struct Task{
-   int a, b;
-}Task;
+typedef struct Clock {
+  int c[THREAD_NUM];
+} Clock;
 
-Task taskQueue[BUFFER_SIZE];
-int taskCount = 0;
+typedef struct queue_t {
+  Clock queue[BUFFER_SIZE];
+  int head;
+  int tail;
+  int size;
+  int capacity;
+} queue_t;
+
+typedef struct Task {
+  int id;
+  queue_t *q;
+  Clock c;
+} Task;
+
+queue_t* init_queue(); 
+int is_full(queue_t* q);
+void enqueue(queue_t* q, Clock c);
+void dequeue(queue_t* q, Clock c);
+
+void print_clock(Clock c);
+void* consumerBehavior(void *consumer_args); 
+void* producerBehavior(void *producer_args); 
 
 pthread_mutex_t mutex;
 
-pthread_cond_t condFull;
-pthread_cond_t condEmpty;
+pthread_cond_t queueNotFull;
+pthread_cond_t queueNotEmpty;
 
-void executeTask(Task* task, int id){
-   int result = task->a + task->b;
-   printf("(Thread %d) Sum of %d and %d is %d\n", id, task->a, task->b, result);
+int main(int argc, char* argv[]) 
+{
+  queue_t *q = init_queue();
+
+  pthread_mutex_init(&mutex, NULL);
+
+  pthread_cond_init(&queueNotFull, NULL);
+  pthread_cond_init(&queueNotEmpty, NULL);
+
+  pthread_t consumers[THREAD_NUM];
+  pthread_t producers[THREAD_NUM];
+
+  Task *consumers_tasks = (Task*) calloc(THREAD_NUM, sizeof(Task));
+  Task *producers_tasks = (Task*) calloc(THREAD_NUM, sizeof(Task));
+
+
+  for (int i = 0; i < THREAD_NUM; i++)
+  {  
+    consumers_tasks[i] = (Task) {i, q, {0}};
+    if (pthread_create(&consumers[i], NULL, &consumerBehavior, (void*) &consumers_tasks[i]) != 0) 
+    {
+      perror("Failed to create the thread");
+    }  
+  }
+  for (int i = 0; i < THREAD_NUM; i++)
+  {  
+    producers_tasks[i] = (Task) {i, q, {0}};
+    if (pthread_create(&producers[i], NULL, &producerBehavior, (void*) &producers_tasks[i]) != 0)
+    {
+      perror("Failed to create the thread");
+    }  
+  }
+
+  srand(time(NULL));
+  for (int i = 0; i < 500; i++);
+
+  for (int i = 0; i < THREAD_NUM; i++)
+  {  
+    if (pthread_join(consumers[i], NULL) != 0)
+    {
+      perror("Failed to join the thread");
+    }  
+  }
+  free(consumers_tasks);
+  for (int i = 0; i < THREAD_NUM; i++)
+  {  
+    if (pthread_join(producers[i], NULL) != 0) 
+    {
+      perror("Failed to join the thread");
+    }  
+  }
+  free(producers_tasks);
+
+  free(q);
+  pthread_mutex_destroy(&mutex);
+  pthread_cond_destroy(&queueNotEmpty);
+  pthread_cond_destroy(&queueNotFull);
+  return 0;
 }
 
-Task getTask(){
-   pthread_mutex_lock(&mutex);
-   
-   while (taskCount == 0){
-      pthread_cond_wait(&condEmpty, &mutex);
-   }
-   
-   Task task = taskQueue[0];
-   int i;
-   for (i = 0; i < taskCount - 1; i++){
-      taskQueue[i] = taskQueue[i+1];
-   }
-   taskCount--;
-   
-   pthread_mutex_unlock(&mutex);
-   pthread_cond_signal(&condFull);
-   return task;
+queue_t* init_queue() {
+  queue_t* q = (queue_t*) malloc(sizeof(queue_t));
+  q->size = 0;
+  q->head = 0;
+  q->tail = -1;
+  q-> capacity = BUFFER_SIZE;
+  return q;
 }
 
-void submitTask(Task task){
-   pthread_mutex_lock(&mutex);
-
-   while (taskCount == BUFFER_SIZE){
-      pthread_cond_wait(&condFull, &mutex);
-   }
-
-   taskQueue[taskCount] = task;
-   taskCount++;
-
-   pthread_mutex_unlock(&mutex);
-   pthread_cond_signal(&condEmpty);
+int is_empty(queue_t* q) {
+  return q->size == 0;
 }
 
-void *startThread(void* args);  
+int is_full(queue_t* q) {
+  return q->size == q->capacity;
+}
 
-/*--------------------------------------------------------------------*/
-int main(int argc, char* argv[]) {
-   pthread_mutex_init(&mutex, NULL);
-   
-   pthread_cond_init(&condEmpty, NULL);
-   pthread_cond_init(&condFull, NULL);
+void enqueue(queue_t* q, Clock c) {
+  pthread_mutex_lock(&mutex);
 
-   pthread_t thread[THREAD_NUM]; 
-   long i;
-   for (i = 0; i < THREAD_NUM; i++){  
-      if (pthread_create(&thread[i], NULL, &startThread, (void*) i) != 0) {
-         perror("Failed to create the thread");
-      }  
-   }
-   
-   srand(time(NULL));
-   for (i = 0; i < 500; i++){
-      Task t = {
-         .a = rand() % 100,
-         .b = rand() % 100
-      };
-      submitTask(t);
-   }
-   
-   for (i = 0; i < THREAD_NUM; i++){  
-      if (pthread_join(thread[i], NULL) != 0) {
-         perror("Failed to join the thread");
-      }  
-   }
-   
-   pthread_mutex_destroy(&mutex);
-   pthread_cond_destroy(&condEmpty);
-   pthread_cond_destroy(&condFull);
-   return 0;
-}  /* main */
+  while (is_full(q)) {
+    pthread_cond_wait(&queueNotFull, &mutex);
+  }
 
-/*-------------------------------------------------------------------*/
-void *startThread(void* args) {
-   long id = (long) args; 
-   while (1){ 
-      Task task = getTask();
-      executeTask(&task, id);
-      sleep(rand()%5);
-   }
-   return NULL;
-} 
+  q->tail = (q->tail + 1) % q->capacity;
+  q->queue[q->tail] = c;
+  q->size++;
 
+  pthread_mutex_unlock(&mutex);
+  pthread_cond_signal(&queueNotEmpty);
+}
+
+void dequeue(queue_t* q, Clock c) {
+  pthread_mutex_lock(&mutex);
+
+  while (is_empty(q)) {
+    pthread_cond_wait(&queueNotEmpty, &mutex);
+  }
+
+  c = q->queue[q->head];
+  q->head = (q->head + 1) % q->capacity;
+  q->size--;
+
+  print_clock(c);
+
+  pthread_mutex_unlock(&mutex);
+  pthread_cond_signal(&queueNotFull);
+}
+
+void* consumerBehavior(void *consumer_args) {
+  Task *t = (Task*) consumer_args;
+
+  while (1) {
+    dequeue(t->q, t->c);
+    sleep(rand() % 5);
+  }
+  return NULL;
+}
+
+void* producerBehavior(void *producer_args) {
+  Task *t = (Task*) producer_args;
+  
+  while (1) {
+    t->c.c[t->id]++;
+    enqueue(t->q, t->c);
+    sleep(rand() % 5);
+  }
+
+  return NULL;
+}
+
+void print_clock(Clock c) {
+  printf("clock: ( %i", c.c[0]);
+  for (int i = 1; i < THREAD_NUM; i++) {
+    printf(", %i", c.c[i]);
+  }
+  printf(")\n");
+}
